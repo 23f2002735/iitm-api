@@ -6,7 +6,6 @@ import re, json, sys, traceback, os
 from io import StringIO
 from datetime import timedelta
 from youtube_transcript_api import YouTubeTranscriptApi
-import google.generativeai as genai   # optional (used in code-interpreter AI)
 
 app = FastAPI()
 
@@ -21,63 +20,72 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# =========================
-# 1️⃣ COMMENT SENTIMENT (NO OPENAI)
-# =========================
+# ============================================================
+# 1️⃣ COMMENT SENTIMENT  (NO API KEY NEEDED)
+# ============================================================
 
 class CommentRequest(BaseModel):
     comment: str
 
 
-@app.post("/comment")
-def comment(req: CommentRequest):
-    text = req.comment.lower()
+def simple_sentiment(text: str):
+    t = text.lower()
 
-    positive_words = ["good", "great", "amazing", "love", "excellent", "happy"]
-    negative_words = ["bad", "terrible", "awful", "hate", "worst", "poor"]
+    positive_words = ["good", "great", "amazing", "love", "excellent", "nice"]
+    negative_words = ["bad", "worst", "hate", "terrible", "awful"]
 
-    if any(w in text for w in positive_words):
+    score = 3
+
+    if any(w in t for w in positive_words):
+        score = 5
         sentiment = "positive"
-        rating = 5
-    elif any(w in text for w in negative_words):
+    elif any(w in t for w in negative_words):
+        score = 1
         sentiment = "negative"
-        rating = 1
     else:
         sentiment = "neutral"
-        rating = 3
+        score = 3
 
-    return {
-        "sentiment": sentiment,
-        "rating": rating
-    }
+    return {"sentiment": sentiment, "rating": score}
 
-# =========================
+
+@app.post("/comment")
+def comment(req: CommentRequest):
+    if not req.comment.strip():
+        raise HTTPException(400, "Empty comment")
+
+    return simple_sentiment(req.comment)
+
+
+# ============================================================
 # 2️⃣ CODE INTERPRETER
-# =========================
+# ============================================================
 
 class CodeRequest(BaseModel):
     code: str
 
 
 def execute_python(code: str):
-    old_stdout = sys.stdout
+    old = sys.stdout
     sys.stdout = StringIO()
     try:
         exec(code)
-        output = sys.stdout.getvalue()
-        return True, output
+        out = sys.stdout.getvalue()
+        return True, out
     except Exception:
         return False, traceback.format_exc()
     finally:
-        sys.stdout = old_stdout
+        sys.stdout = old
 
 
-def analyze_error_local(code: str, tb: str):
+def extract_traceback_line(tb: str):
     """
-    Fallback: extract line numbers from traceback without AI
+    Extract real error line from traceback.
     """
-    lines = re.findall(r"line (\d+)", tb)
-    return [int(x) for x in lines] if lines else []
+    m = re.search(r'line (\d+)', tb)
+    if m:
+        return [int(m.group(1))]
+    return []
 
 
 @app.post("/code-interpreter")
@@ -87,14 +95,13 @@ def code_interpreter(req: CodeRequest):
     if ok:
         return {"error": [], "result": out}
 
-    # try local extraction first
-    lines = analyze_error_local(req.code, out)
-
+    lines = extract_traceback_line(out)
     return {"error": lines, "result": out}
 
-# =========================
+
+# ============================================================
 # 3️⃣ YOUTUBE ASK
-# =========================
+# ============================================================
 
 class AskRequest(BaseModel):
     video_url: str
@@ -105,22 +112,20 @@ def hhmmss(sec):
     return str(timedelta(seconds=int(sec))).rjust(8, "0")
 
 
-def extract_video_id(url):
+def vid(url):
     m = re.search(r"(?:v=|youtu.be/)([\w-]{11})", url)
     return m.group(1) if m else None
 
 
 @app.post("/ask")
 def ask(req: AskRequest):
-    video_id = extract_video_id(req.video_url)
-
+    video_id = vid(req.video_url)
     if not video_id:
-        raise HTTPException(400, "Invalid YouTube URL")
+        raise HTTPException(400, "Bad URL")
 
     transcript = YouTubeTranscriptApi.get_transcript(video_id)
 
     topic = req.topic.lower()
-
     for entry in transcript:
         if topic in entry["text"].lower():
             return {
@@ -135,9 +140,10 @@ def ask(req: AskRequest):
         "topic": req.topic
     }
 
-# =========================
+
+# ============================================================
 # 4️⃣ FUNCTION CALLING
-# =========================
+# ============================================================
 
 @app.get("/execute")
 def execute(q: str = Query(...)):
@@ -189,4 +195,7 @@ def execute(q: str = Query(...)):
             })
         }
 
-    return {"error": "No match"}
+    return {
+        "name": "unknown",
+        "arguments": json.dumps({})
+    }
