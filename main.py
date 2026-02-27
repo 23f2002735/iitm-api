@@ -1,7 +1,6 @@
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List
 import re, json, sys, traceback
 from io import StringIO
 from datetime import timedelta
@@ -19,7 +18,7 @@ app.add_middleware(
 )
 
 # ============================================================
-# 1️⃣ COMMENT
+# 1️⃣ COMMENT SENTIMENT
 # ============================================================
 
 class CommentRequest(BaseModel):
@@ -28,12 +27,12 @@ class CommentRequest(BaseModel):
 
 @app.post("/comment")
 def comment(req: CommentRequest):
-    t = req.comment.lower()
+    text = req.comment.lower()
 
-    if any(w in t for w in ["good", "great", "amazing", "love", "excellent"]):
+    if any(w in text for w in ["good", "great", "amazing", "love", "excellent"]):
         return {"sentiment": "positive", "rating": 5}
 
-    if any(w in t for w in ["bad", "worst", "hate", "terrible", "awful"]):
+    if any(w in text for w in ["bad", "worst", "hate", "terrible", "awful"]):
         return {"sentiment": "negative", "rating": 1}
 
     return {"sentiment": "neutral", "rating": 3}
@@ -42,8 +41,7 @@ def comment(req: CommentRequest):
 # 2️⃣ CODE INTERPRETER
 # ============================================================
 
-class CodeRequest(BaseModel)
-
+class CodeRequest(BaseModel):
     code: str
 
 
@@ -59,7 +57,7 @@ def run_code(code: str):
         sys.stdout = old
 
 
-def get_error_line(tb: str):
+def extract_error_line(tb: str):
     m = re.search(r'line (\d+)', tb)
     if m:
         return [int(m.group(1))]
@@ -73,10 +71,10 @@ def code_interpreter(req: CodeRequest):
     if ok:
         return {"error": [], "result": out}
 
-    return {"error": get_error_line(out), "result": out}
+    return {"error": extract_error_line(out), "result": out}
 
 # ============================================================
-# 3️⃣ ASK  (REAL TRANSCRIPT SEARCH)
+# 3️⃣ YOUTUBE ASK
 # ============================================================
 
 class AskRequest(BaseModel):
@@ -118,14 +116,14 @@ def ask(req: AskRequest):
     }
 
 # ============================================================
-# 4️⃣ FUNCTION CALLING  (ROBUST)
+# 4️⃣ FUNCTION CALLING
 # ============================================================
 
 @app.get("/execute")
 def execute(q: str = Query(...)):
     ql = q.lower()
 
-    # ticket
+    # ticket status
     m = re.search(r"ticket\s+(\d+)", ql)
     if "status" in ql and m:
         return {
@@ -176,7 +174,4 @@ def execute(q: str = Query(...)):
             })
         }
 
-    return {
-        "name": "unknown",
-        "arguments": "{}"
-    }
+    return {"name": "unknown", "arguments": "{}"}
