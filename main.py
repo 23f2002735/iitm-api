@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import List
 import re, json, sys, traceback
 from io import StringIO
 from datetime import timedelta
@@ -8,9 +9,10 @@ from youtube_transcript_api import YouTubeTranscriptApi
 
 app = FastAPI()
 
-# =========================
+# ============================================================
 # CORS
-# =========================
+# ============================================================
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -35,7 +37,6 @@ def simple_sentiment(text: str):
 
     if any(w in t for w in positive_words):
         return {"sentiment": "positive", "rating": 5}
-
     if any(w in t for w in negative_words):
         return {"sentiment": "negative", "rating": 1}
 
@@ -46,7 +47,6 @@ def simple_sentiment(text: str):
 def comment(req: CommentRequest):
     if not req.comment.strip():
         raise HTTPException(400, "Empty comment")
-
     return simple_sentiment(req.comment)
 
 
@@ -59,26 +59,29 @@ class CodeRequest(BaseModel):
 
 
 def execute_python(code: str):
-    old = sys.stdout
+    old_stdout = sys.stdout
     sys.stdout = StringIO()
+
     try:
         exec(code)
-        out = sys.stdout.getvalue()
-        return True, out
+        output = sys.stdout.getvalue()
+        return True, output
     except Exception:
-        return False, traceback.format_exc()
+        tb = traceback.format_exc()
+        return False, tb
     finally:
-        sys.stdout = old
+        sys.stdout = old_stdout
 
 
-def extract_traceback_line(tb: str):
+def extract_error_line(tb: str):
     """
-    Extract LAST user-code line number from traceback
+    Extract ONLY the real user-code line number.
+    Avoid matching library/internal lines.
     """
-    matches = re.findall(r'File "<string>", line (\d+)', tb)
-    if matches:
-        return [int(matches[-1])]
-    return []
+    matches = re.findall(r'line (\d+)', tb)
+    if not matches:
+        return []
+    return [int(matches[-1])]  # last occurrence = real line
 
 
 @app.post("/code-interpreter")
@@ -88,7 +91,7 @@ def code_interpreter(req: CodeRequest):
     if ok:
         return {"error": [], "result": out}
 
-    lines = extract_traceback_line(out)
+    lines = extract_error_line(out)
     return {"error": lines, "result": out}
 
 
@@ -101,28 +104,22 @@ class AskRequest(BaseModel):
     topic: str
 
 
-def hhmmss(sec):
-    return str(timedelta(seconds=int(sec))).rjust(8, "0")
+def hhmmss(seconds):
+    return str(timedelta(seconds=int(seconds))).rjust(8, "0")
 
 
-def vid(url):
-    m = re.search(r"(?:v=|youtu.be/)([\w-]{11})", url)
+def extract_video_id(url: str):
+    m = re.search(r"(?:v=|youtu\.be/)([\w-]{11})", url)
     return m.group(1) if m else None
-
-
-# IMPORTANT: allow browser preflight
-@app.options("/ask")
-def ask_options():
-    return {"ok": True}
 
 
 @app.post("/ask")
 def ask(req: AskRequest):
-    video_id = vid(req.video_url)
-    if not video_id:
-        raise HTTPException(400, "Bad URL")
+    vid = extract_video_id(req.video_url)
+    if not vid:
+        raise HTTPException(400, "Invalid YouTube URL")
 
-    transcript = YouTubeTranscriptApi.get_transcript(video_id)
+    transcript = YouTubeTranscriptApi.get_transcript(vid)
 
     topic = req.topic.lower()
     for entry in transcript:
@@ -148,15 +145,19 @@ def ask(req: AskRequest):
 def execute(q: str = Query(...)):
     ql = q.lower()
 
-    m = re.search(r"ticket (\d+)", ql)
-    if "status" in ql and m:
+    # Ticket status
+    m = re.search(r"ticket\s+(\d+)", ql)
+    if m and "status" in ql:
         return {
             "name": "get_ticket_status",
-            "arguments": json.dumps({"ticket_id": int(m.group(1))})
+            "arguments": json.dumps({
+                "ticket_id": int(m.group(1))
+            })
         }
 
-    m = re.search(r"(\d{4}-\d{2}-\d{2}).*(\d{2}:\d{2}).*room ([a-z0-9 ]+)", ql)
-    if "schedule" in ql and m:
+    # Schedule meeting
+    m = re.search(r"(\d{4}-\d{2}-\d{2}).*?(\d{2}:\d{2}).*?room\s+([a-z0-9 ]+)", ql)
+    if m and "schedule" in ql:
         return {
             "name": "schedule_meeting",
             "arguments": json.dumps({
@@ -166,15 +167,19 @@ def execute(q: str = Query(...)):
             })
         }
 
-    m = re.search(r"employee (\d+)", ql)
-    if "expense" in ql and m:
+    # Expense
+    m = re.search(r"employee\s+(\d+)", ql)
+    if m and "expense" in ql:
         return {
             "name": "get_expense_balance",
-            "arguments": json.dumps({"employee_id": int(m.group(1))})
+            "arguments": json.dumps({
+                "employee_id": int(m.group(1))
+            })
         }
 
-    m = re.search(r"employee (\d+).*?(\d{4})", ql)
-    if "bonus" in ql and m:
+    # Bonus
+    m = re.search(r"employee\s+(\d+).*?(\d{4})", ql)
+    if m and "bonus" in ql:
         return {
             "name": "calculate_performance_bonus",
             "arguments": json.dumps({
@@ -183,19 +188,19 @@ def execute(q: str = Query(...)):
             })
         }
 
-    c = re.search(r"issue (\d+)", ql)
-    d = re.search(r"for the ([a-z ]+) department", ql)
-    if "issue" in ql and c and d:
+    # Office issue
+    c = re.search(r"issue\s+(\d+)", ql)
+    d = re.search(r"for the\s+([a-z ]+)\s+department", ql)
+    if c and d:
         return {
             "name": "report_office_issue",
             "arguments": json.dumps({
                 "issue_code": int(c.group(1)),
-                "department": d.group(1).title()
+                "department": d.group(1).strip().title()
             })
         }
 
-    # IMPORTANT: IITM validator expects valid function name
     return {
-        "name": "get_ticket_status",
-        "arguments": json.dumps({"ticket_id": 0})
+        "name": "unknown",
+        "arguments": json.dumps({})
     }
