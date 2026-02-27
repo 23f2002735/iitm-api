@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+openai
+google-generativeai
+youtube-transcript-api
+pydantic
