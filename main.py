@@ -29,10 +29,10 @@ class CommentRequest(BaseModel):
 def comment(req: CommentRequest):
     text = req.comment.lower()
 
-    if any(w in text for w in ["good", "great", "amazing", "love", "excellent"]):
+    if any(w in text for w in ["good","great","amazing","love","excellent"]):
         return {"sentiment": "positive", "rating": 5}
 
-    if any(w in text for w in ["bad", "worst", "hate", "terrible", "awful"]):
+    if any(w in text for w in ["bad","worst","hate","terrible","awful"]):
         return {"sentiment": "negative", "rating": 1}
 
     return {"sentiment": "neutral", "rating": 3}
@@ -116,61 +116,64 @@ def ask(req: AskRequest):
     }
 
 # ============================================================
-# 4️⃣ FUNCTION CALLING
+# 4️⃣ FUNCTION CALLING (ROBUST)
 # ============================================================
 
 @app.get("/execute")
 def execute(q: str = Query(...)):
     ql = q.lower()
 
-    # ticket status
-    m = re.search(r"ticket\s+(\d+)", ql)
-    if "status" in ql and m:
+    # ---------- ticket status ----------
+    m = re.search(r"ticket\s*(\d+)", ql)
+    if m and ("status" in ql or "ticket" in ql):
         return {
             "name": "get_ticket_status",
             "arguments": json.dumps({"ticket_id": int(m.group(1))})
         }
 
-    # meeting
-    m = re.search(r"(\d{4}-\d{2}-\d{2}).*?(\d{2}:\d{2}).*?room\s+([a-z0-9 ]+)", ql)
-    if "schedule" in ql and m:
+    # ---------- schedule meeting ----------
+    m = re.search(r"(\d{4}-\d{2}-\d{2})", ql)
+    t = re.search(r"(\d{2}:\d{2})", ql)
+    r = re.search(r"room\s*([a-z0-9 ]+)", ql)
+    if "schedule" in ql and m and t and r:
         return {
             "name": "schedule_meeting",
             "arguments": json.dumps({
                 "date": m.group(1),
-                "time": m.group(2),
-                "meeting_room": m.group(3).strip().title()
+                "time": t.group(1),
+                "meeting_room": r.group(1).strip().title()
             })
         }
 
-    # expense
-    m = re.search(r"employee\s+(\d+)", ql)
-    if "expense" in ql and m:
+    # ---------- expense ----------
+    m = re.search(r"employee\s*(\d+)", ql)
+    if m and "expense" in ql:
         return {
             "name": "get_expense_balance",
             "arguments": json.dumps({"employee_id": int(m.group(1))})
         }
 
-    # bonus
-    m = re.search(r"employee\s+(\d+).*?(\d{4})", ql)
-    if "bonus" in ql and m:
+    # ---------- bonus ----------
+    m = re.search(r"employee\s*(\d+)", ql)
+    y = re.search(r"(20\d{2})", ql)
+    if m and y and "bonus" in ql:
         return {
             "name": "calculate_performance_bonus",
             "arguments": json.dumps({
                 "employee_id": int(m.group(1)),
-                "current_year": int(m.group(2))
+                "current_year": int(y.group(1))
             })
         }
 
-    # issue
-    c = re.search(r"issue\s+(\d+)", ql)
-    d = re.search(r"for\s+the\s+([a-z ]+)\s+department", ql)
-    if "issue" in ql and c and d:
+    # ---------- issue ----------
+    c = re.search(r"issue\s*(\d+)", ql)
+    d = re.search(r"([a-z ]+)\s*department", ql)
+    if c and d:
         return {
             "name": "report_office_issue",
             "arguments": json.dumps({
                 "issue_code": int(c.group(1)),
-                "department": d.group(1).title()
+                "department": d.group(1).strip().title()
             })
         }
 
