@@ -6,8 +6,7 @@ import re, json, sys, traceback, os
 from io import StringIO
 from datetime import timedelta
 from youtube_transcript_api import YouTubeTranscriptApi
-import google.generativeai as genai   # ✅ FIXED GEMINI IMPORT
-from openai import OpenAI
+import google.generativeai as genai   # optional (used in code-interpreter AI)
 
 app = FastAPI()
 
@@ -23,12 +22,7 @@ app.add_middleware(
 )
 
 # =========================
-# OPENAI CLIENT
-# =========================
-openai_client = OpenAI()
-
-# =========================
-# 1️⃣ COMMENT SENTIMENT
+# 1️⃣ COMMENT SENTIMENT (NO OPENAI)
 # =========================
 
 class CommentRequest(BaseModel):
@@ -37,37 +31,25 @@ class CommentRequest(BaseModel):
 
 @app.post("/comment")
 def comment(req: CommentRequest):
-    if not req.comment.strip():
-        raise HTTPException(400, "Empty comment")
+    text = req.comment.lower()
 
-    resp = openai_client.responses.create(
-        model="gpt-4.1-mini",
-        input=req.comment,
-        response_format={
-            "type": "json_schema",
-            "json_schema": {
-                "name": "sentiment",
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "sentiment": {
-                            "type": "string",
-                            "enum": ["positive", "negative", "neutral"]
-                        },
-                        "rating": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 5
-                        }
-                    },
-                    "required": ["sentiment", "rating"]
-                }
-            }
-        }
-    )
+    positive_words = ["good", "great", "amazing", "love", "excellent", "happy"]
+    negative_words = ["bad", "terrible", "awful", "hate", "worst", "poor"]
 
-    return resp.output_parsed
+    if any(w in text for w in positive_words):
+        sentiment = "positive"
+        rating = 5
+    elif any(w in text for w in negative_words):
+        sentiment = "negative"
+        rating = 1
+    else:
+        sentiment = "neutral"
+        rating = 3
 
+    return {
+        "sentiment": sentiment,
+        "rating": rating
+    }
 
 # =========================
 # 2️⃣ CODE INTERPRETER
@@ -90,33 +72,12 @@ def execute_python(code: str):
         sys.stdout = old_stdout
 
 
-def analyze_error(code: str, tb: str):
+def analyze_error_local(code: str, tb: str):
     """
-    Uses Gemini to detect error line numbers
+    Fallback: extract line numbers from traceback without AI
     """
-    genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-
-    prompt = f"""
-Identify the Python line numbers causing the error.
-
-CODE:
-{code}
-
-TRACEBACK:
-{tb}
-
-Return JSON ONLY:
-{{"error_lines":[numbers]}}
-"""
-
-    model = genai.GenerativeModel("gemini-1.5-flash")
-    r = model.generate_content(prompt)
-
-    try:
-        data = json.loads(r.text)
-        return data.get("error_lines", [])
-    except Exception:
-        return []
+    lines = re.findall(r"line (\d+)", tb)
+    return [int(x) for x in lines] if lines else []
 
 
 @app.post("/code-interpreter")
@@ -126,13 +87,10 @@ def code_interpreter(req: CodeRequest):
     if ok:
         return {"error": [], "result": out}
 
-    try:
-        lines = analyze_error(req.code, out)
-    except Exception:
-        lines = []
+    # try local extraction first
+    lines = analyze_error_local(req.code, out)
 
     return {"error": lines, "result": out}
-
 
 # =========================
 # 3️⃣ YOUTUBE ASK
@@ -176,7 +134,6 @@ def ask(req: AskRequest):
         "video_url": req.video_url,
         "topic": req.topic
     }
-
 
 # =========================
 # 4️⃣ FUNCTION CALLING
