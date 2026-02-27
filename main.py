@@ -6,13 +6,14 @@ import re, json, sys, traceback, os
 from io import StringIO
 from datetime import timedelta
 from youtube_transcript_api import YouTubeTranscriptApi
-from google import genai
-from google.genai import types
+import google.generativeai as genai   # ✅ FIXED GEMINI IMPORT
 from openai import OpenAI
 
 app = FastAPI()
 
+# =========================
 # CORS
+# =========================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -21,6 +22,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# =========================
+# OPENAI CLIENT
+# =========================
 openai_client = OpenAI()
 
 # =========================
@@ -73,51 +77,52 @@ class CodeRequest(BaseModel):
     code: str
 
 
-class ErrorAnalysis(BaseModel):
-    error_lines: List[int]
-
-
 def execute_python(code: str):
-    old = sys.stdout
+    old_stdout = sys.stdout
     sys.stdout = StringIO()
     try:
         exec(code)
-        out = sys.stdout.getvalue()
-        return True, out
+        output = sys.stdout.getvalue()
+        return True, output
     except Exception:
         return False, traceback.format_exc()
     finally:
-        sys.stdout = old
+        sys.stdout = old_stdout
 
 
 def analyze_error(code: str, tb: str):
-    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-    prompt = f"Find error line numbers.\nCODE:\n{code}\nTRACEBACK:\n{tb}"
+    """
+    Uses Gemini to detect error line numbers
+    """
+    genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
-    r = client.models.generate_content(
-        model="gemini-2.0-flash-exp",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "error_lines": types.Schema(
-                        type=types.Type.ARRAY,
-                        items=types.Schema(type=types.Type.INTEGER)
-                    )
-                },
-                required=["error_lines"]
-            )
-        )
-    )
+    prompt = f"""
+Identify the Python line numbers causing the error.
 
-    return ErrorAnalysis.model_validate_json(r.text).error_lines
+CODE:
+{code}
+
+TRACEBACK:
+{tb}
+
+Return JSON ONLY:
+{{"error_lines":[numbers]}}
+"""
+
+    model = genai.GenerativeModel("gemini-1.5-flash")
+    r = model.generate_content(prompt)
+
+    try:
+        data = json.loads(r.text)
+        return data.get("error_lines", [])
+    except Exception:
+        return []
 
 
 @app.post("/code-interpreter")
 def code_interpreter(req: CodeRequest):
     ok, out = execute_python(req.code)
+
     if ok:
         return {"error": [], "result": out}
 
@@ -142,24 +147,26 @@ def hhmmss(sec):
     return str(timedelta(seconds=int(sec))).rjust(8, "0")
 
 
-def vid(url):
+def extract_video_id(url):
     m = re.search(r"(?:v=|youtu.be/)([\w-]{11})", url)
     return m.group(1) if m else None
 
 
 @app.post("/ask")
 def ask(req: AskRequest):
-    video_id = vid(req.video_url)
+    video_id = extract_video_id(req.video_url)
+
     if not video_id:
-        raise HTTPException(400, "Bad URL")
+        raise HTTPException(400, "Invalid YouTube URL")
 
     transcript = YouTubeTranscriptApi.get_transcript(video_id)
 
-    t = req.topic.lower()
-    for e in transcript:
-        if t in e["text"].lower():
+    topic = req.topic.lower()
+
+    for entry in transcript:
+        if topic in entry["text"].lower():
             return {
-                "timestamp": hhmmss(e["start"]),
+                "timestamp": hhmmss(entry["start"]),
                 "video_url": req.video_url,
                 "topic": req.topic
             }
